@@ -3,7 +3,7 @@ Section: net
 Priority: optional
 Maintainer: Steffen Moeller <moeller@debian.org>
 Build-Depends: debhelper (>= 8.0.0), libgps-dev, libcap-dev [linux-any], pkg-config
-Standards-Version: 3.9.6
+Standards-Version: 3.9.8
 Homepage: https://www.open-mesh.org/projects/alfred/wiki
 
 Package: alfred

@@ -3,5 +3,5 @@ alfred for Debian
 
 git clone https://git.open-mesh.org/alfred.git
 cd alfred
-git checkout -b v2016.1 2016.1
+git checkout v2016.1
 GZIP=-9n tar --exclude=.git --exclude=.gitignore --exclude=.gitattributes -czvf alfred_2016.1 alfred

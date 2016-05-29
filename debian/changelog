@@ -1,3 +1,12 @@
+alfred (2016.1-1) unstable; urgency=low
+
+  * New upstream version.
+  * Update signing-key to 2DE9541A85CC87D5D9836D5E0C8A47A2ABD72DF9 as
+    informed by upstream developer Sven Eckelmann (Closes: #812890)
+  * Yet another attempt to build on non-Linux platforms (Closes: #807546)
+
+ -- Steffen Moeller <moeller@debian.org>  Sun, 29 May 2016 19:59:25 +0200
+
 alfred (2015.2-1) unstable; urgency=low
 
   * New upstream version (Closes: #807555)
