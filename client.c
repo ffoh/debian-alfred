@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include <ctype.h>
@@ -239,7 +240,7 @@ static int check_interface(const char *iface)
 		return -1;
 	}
 
-	sock = socket(PF_INET6, SOCK_DGRAM, 0);
+	sock = socket(PF_INET, SOCK_DGRAM, 0);
 	if (sock < 0) {
 		perror("can't open socket");
 		return -1;

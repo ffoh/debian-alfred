@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2013-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2013-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include "vis.h"
@@ -35,9 +36,17 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+#include "batman_adv.h"
+#include "netlink.h"
 #include "debugfs.h"
 
 static struct globals vis_globals;
+
+struct vis_netlink_opts {
+	struct globals *globals;
+	struct nlquery_opts query_opts;
+};
 
 static char *read_file(char *fname)
 {
@@ -125,9 +134,10 @@ static int get_if_mac(char *ifname, uint8_t *mac)
 	return 0;
 }
 
-static int get_if_index(struct globals *globals, char *ifname)
+static int get_if_index_byname(struct globals *globals, char *ifname)
 {
 	struct iface_list_entry *i_entry;
+	int devindex;
 	int i;
 
 	if (!ifname)
@@ -139,6 +149,11 @@ static int get_if_index(struct globals *globals, char *ifname)
 			return i;
 		i++;
 	}
+
+	devindex = if_nametoindex(ifname);
+	if (!devindex)
+		return -1;
+
 	i_entry = malloc(sizeof(*i_entry));
 	if (!i_entry)
 		return -1;
@@ -148,6 +163,46 @@ static int get_if_index(struct globals *globals, char *ifname)
 		return -1;
 	}
 
+	i_entry->devindex = devindex;
+	strncpy(i_entry->name, ifname, sizeof(i_entry->name));
+	/* just to be safe ... */
+	i_entry->name[sizeof(i_entry->name) - 1] = 0;
+	list_add_tail(&i_entry->list, &globals->iface_list);
+
+	return i;
+}
+
+static int get_if_index_devindex(struct globals *globals, int devindex)
+{
+	struct iface_list_entry *i_entry;
+	char *ifname;
+	char ifnamebuf[IF_NAMESIZE];
+	int i;
+
+	if (!devindex)
+		return -1;
+
+	i = 0;
+	list_for_each_entry(i_entry, &globals->iface_list, list) {
+		if (i_entry->devindex == devindex)
+			return i;
+		i++;
+	}
+
+	ifname = if_indextoname(devindex, ifnamebuf);
+	if (!ifname)
+		return -1;
+
+	i_entry = malloc(sizeof(*i_entry));
+	if (!i_entry)
+		return -1;
+
+	if (get_if_mac(ifname, i_entry->mac)) {
+		free(i_entry);
+		return -1;
+	}
+
+	i_entry->devindex = devindex;
 	strncpy(i_entry->name, ifname, sizeof(i_entry->name));
 	/* just to be safe ... */
 	i_entry->name[sizeof(i_entry->name) - 1] = 0;
@@ -182,7 +237,75 @@ static int alfred_open_sock(struct globals *globals)
 	return 0;
 }
 
-static int parse_transtable_local(struct globals *globals)
+static const int parse_transtable_local_mandatory[] = {
+	BATADV_ATTR_TT_ADDRESS,
+};
+
+static int parse_transtable_local_netlink_cb(struct nl_msg *msg, void *arg)
+{
+	struct nlattr *attrs[BATADV_ATTR_MAX+1];
+	struct nlmsghdr *nlh = nlmsg_hdr(msg);
+	struct nlquery_opts *query_opts = arg;
+	struct vis_netlink_opts *opts;
+	struct genlmsghdr *ghdr;
+	struct vis_list_entry *v_entry;
+	uint8_t *addr;
+
+	opts = container_of(query_opts, struct vis_netlink_opts,
+			    query_opts);
+
+	if (!genlmsg_valid_hdr(nlh, 0))
+		return NL_OK;
+
+	ghdr = nlmsg_data(nlh);
+
+	if (ghdr->cmd != BATADV_CMD_GET_TRANSTABLE_LOCAL)
+		return NL_OK;
+
+	if (nla_parse(attrs, BATADV_ATTR_MAX, genlmsg_attrdata(ghdr, 0),
+		      genlmsg_len(ghdr), batadv_netlink_policy)) {
+		return NL_OK;
+	}
+
+	if (missing_mandatory_attrs(attrs, parse_transtable_local_mandatory,
+				    ARRAY_SIZE(parse_transtable_local_mandatory)))
+		return NL_OK;
+
+	addr = nla_data(attrs[BATADV_ATTR_TT_ADDRESS]);
+
+	v_entry = malloc(sizeof(*v_entry));
+	if (!v_entry)
+		return NL_OK;
+
+	memcpy(v_entry->v.mac, addr, ETH_ALEN);
+	v_entry->v.ifindex = 255;
+	v_entry->v.qual = 0;
+	list_add_tail(&v_entry->list, &opts->globals->entry_list);
+
+	return NL_OK;
+}
+
+static int parse_transtable_local_netlink(struct globals *globals)
+{
+	struct vis_netlink_opts opts = {
+		.globals = globals,
+		.query_opts = {
+			.err = 0,
+		},
+	};
+	int ret;
+
+	ret = netlink_query_common(globals->interface,
+				   BATADV_CMD_GET_TRANSTABLE_LOCAL,
+			           parse_transtable_local_netlink_cb,
+				   &opts.query_opts);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int parse_transtable_local_debugfs(struct globals *globals)
 {
 	char *fbuf;
 	char *lptr, *tptr;
@@ -234,6 +357,17 @@ static int parse_transtable_local(struct globals *globals)
 	return 0;
 }
 
+static int parse_transtable_local(struct globals *globals)
+{
+	int ret;
+
+	ret = parse_transtable_local_netlink(globals);
+	if (ret != -EOPNOTSUPP)
+		return ret;
+
+	return parse_transtable_local_debugfs(globals);
+}
+
 static void clear_lists(struct globals *globals)
 {
 	struct vis_list_entry *v_entry, *v_entry_safe;
@@ -257,6 +391,7 @@ static int register_interfaces(struct globals *globals)
 	DIR *iface_base_dir;
 	struct dirent *iface_dir;
 	char *path_buff, *file_content;
+	char *content_newline;
 
 	path_buff = malloc(PATH_BUFF_LEN);
 	if (!path_buff) {
@@ -295,8 +430,12 @@ static int register_interfaces(struct globals *globals)
 		if (!file_content)
 			continue;
 
+		content_newline = strstr(file_content, "\n");
+		if (content_newline)
+			*content_newline = '\0';
+
 		if (strcmp(file_content, "active") == 0)
-			get_if_index(globals, iface_dir->d_name);
+			get_if_index_byname(globals, iface_dir->d_name);
 
 free_line:
 		free(file_content);
@@ -313,8 +452,92 @@ err:
 	return EXIT_FAILURE;
 }
 
+static const int parse_orig_list_mandatory[] = {
+	BATADV_ATTR_ORIG_ADDRESS,
+	BATADV_ATTR_NEIGH_ADDRESS,
+	BATADV_ATTR_TQ,
+	BATADV_ATTR_HARD_IFINDEX,
+};
 
-static int parse_orig_list(struct globals *globals)
+static int parse_orig_list_netlink_cb(struct nl_msg *msg, void *arg)
+{
+	struct nlattr *attrs[BATADV_ATTR_MAX+1];
+	struct nlmsghdr *nlh = nlmsg_hdr(msg);
+	struct nlquery_opts *query_opts = arg;
+	struct vis_netlink_opts *opts;
+	struct genlmsghdr *ghdr;
+	struct vis_list_entry *v_entry;
+	uint8_t *orig;
+	uint8_t *neigh;
+	uint8_t tq;
+	uint32_t hardif;
+
+	opts = container_of(query_opts, struct vis_netlink_opts,
+			    query_opts);
+
+	if (!genlmsg_valid_hdr(nlh, 0))
+		return NL_OK;
+
+	ghdr = nlmsg_data(nlh);
+
+	if (ghdr->cmd != BATADV_CMD_GET_ORIGINATORS)
+		return NL_OK;
+
+	if (nla_parse(attrs, BATADV_ATTR_MAX, genlmsg_attrdata(ghdr, 0),
+		      genlmsg_len(ghdr), batadv_netlink_policy)) {
+		return NL_OK;
+	}
+
+	if (missing_mandatory_attrs(attrs, parse_orig_list_mandatory,
+				    ARRAY_SIZE(parse_orig_list_mandatory)))
+		return NL_OK;
+
+	if (!attrs[BATADV_ATTR_FLAG_BEST])
+		return NL_OK;
+
+	orig = nla_data(attrs[BATADV_ATTR_ORIG_ADDRESS]);
+	neigh = nla_data(attrs[BATADV_ATTR_NEIGH_ADDRESS]);
+	tq = nla_get_u8(attrs[BATADV_ATTR_TQ]);
+	hardif = nla_get_u32(attrs[BATADV_ATTR_HARD_IFINDEX]);
+
+	if (tq < 1)
+		return NL_OK;
+
+	if (memcmp(orig, neigh, ETH_ALEN) != 0)
+		return NL_OK;
+
+	v_entry = malloc(sizeof(*v_entry));
+	if (!v_entry)
+		return NL_OK;
+
+	memcpy(v_entry->v.mac, orig, ETH_ALEN);
+	v_entry->v.ifindex = get_if_index_devindex(opts->globals, hardif);
+	v_entry->v.qual = tq;
+	list_add_tail(&v_entry->list, &opts->globals->entry_list);
+
+	return NL_OK;
+}
+
+static int parse_orig_list_netlink(struct globals *globals)
+{
+	struct vis_netlink_opts opts = {
+		.globals = globals,
+		.query_opts = {
+			.err = 0,
+		},
+	};
+	int ret;
+
+	ret = netlink_query_common(globals->interface,
+				   BATADV_CMD_GET_ORIGINATORS,
+			           parse_orig_list_netlink_cb, &opts.query_opts);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int parse_orig_list_debugfs(struct globals *globals)
 {
 	char *fbuf;
 	char *lptr, *tptr;
@@ -359,7 +582,7 @@ static int parse_orig_list(struct globals *globals)
 				if (!mac)
 					continue;
 
-				ifindex = get_if_index(globals, iface);
+				ifindex = get_if_index_byname(globals, iface);
 				if (ifindex < 0)
 					continue;
 
@@ -379,6 +602,17 @@ static int parse_orig_list(struct globals *globals)
 	free(fbuf);
 
 	return 0;
+}
+
+static int parse_orig_list(struct globals *globals)
+{
+	int ret;
+
+	ret = parse_orig_list_netlink(globals);
+	if (ret != -EOPNOTSUPP)
+		return ret;
+
+	return parse_orig_list_debugfs(globals);
 }
 
 static int vis_publish_data(struct globals *globals)
@@ -887,13 +1121,7 @@ static struct globals *vis_init(int argc, char *argv[])
 
 static int vis_server(struct globals *globals)
 {
-	char *debugfs_mnt;
-
-	debugfs_mnt = debugfs_mount(NULL);
-	if (!debugfs_mnt) {
-		fprintf(stderr, "Error - can't mount or find debugfs\n");
-		return EXIT_FAILURE;
-	}
+	debugfs_mount(NULL);
 
 	globals->push = (struct alfred_push_data_v0 *) globals->buf;
 	globals->vis_data = (struct vis_v1 *) (globals->buf + sizeof(*globals->push) + sizeof(struct alfred_data));
@@ -912,6 +1140,8 @@ static int vis_server(struct globals *globals)
 		vis_update_data(globals);
 		sleep(UPDATE_INTERVAL);
 	}
+
+	return 0;
 }
 
 int main(int argc, char *argv[])

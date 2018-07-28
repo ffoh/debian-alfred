@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,13 +17,17 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include <netinet/ether.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
 #include <sys/time.h>
 #include <time.h>
 #include "alfred.h"
@@ -74,4 +78,33 @@ bool is_valid_ether_addr(uint8_t addr[ETH_ALEN])
 		return false;
 
 	return true;
+}
+
+int ipv4_arp_request(struct interface *interface, const alfred_addr *addr,
+		     struct ether_addr *mac)
+{
+	struct arpreq arpreq;
+	struct sockaddr_in *sin;
+
+	memset(&arpreq, 0, sizeof(arpreq));
+	memset(mac, 0, ETH_ALEN);
+
+	sin = (struct sockaddr_in *)&arpreq.arp_pa;
+	sin->sin_family = AF_INET;
+	sin->sin_addr.s_addr = addr->ipv4.s_addr;
+
+	strncpy(arpreq.arp_dev, interface->interface, sizeof(arpreq.arp_dev));
+	arpreq.arp_dev[sizeof(arpreq.arp_dev) - 1] = '\0';
+
+	if (ioctl(interface->netsock, SIOCGARP, &arpreq) < 0)
+		return -1;
+
+	if (arpreq.arp_flags & ATF_COM) {
+		memcpy(mac, arpreq.arp_ha.sa_data, sizeof(*mac));
+	} else {
+		perror("arp: incomplete");
+		return -1;
+	}
+
+	return 0;
 }

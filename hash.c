@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2006-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2006-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich, Marek Lindner
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include "hash.h"
@@ -116,6 +117,9 @@ struct hash_it_t *hash_iterate(struct hashtable_t *hash,
 
 	if (!iter_in) {
 		iter = debugMalloc(sizeof(struct hash_it_t), 301);
+		if (!iter)
+			return NULL;
+
 		iter->index =  -1;
 		iter->bucket = NULL;
 		iter->prev_bucket = NULL;

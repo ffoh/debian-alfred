@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include <errno.h>
@@ -258,7 +259,7 @@ static int unix_sock_req_data(struct globals *globals,
 	head->client_socket = client_sock;
 	head->requested_type = request->requested_type;
 
-	send_alfred_packet(interface, &globals->best_server->address,
+	send_alfred_packet(globals, interface, &globals->best_server->address,
 			   request, sizeof(*request));
 
 	return 0;
@@ -276,7 +277,7 @@ int unix_sock_req_data_finish(struct globals *globals,
 	requested_type = head->requested_type;
 	id = head->id;
 	client_sock = head->client_socket;
-	if (head->finished != 1)
+	if (!transaction_finished(head))
 		send_data = 0;
 
 	free(head);
