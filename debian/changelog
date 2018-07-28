@@ -1,3 +1,12 @@
+alfred (2018.2-1) unstable; urgency=low
+
+  * New upstream version.
+  * Introduced github package maintenance
+  * Added dependency on libnl-3
+  * Updated debian/watch
+
+ -- Steffen Moeller <moeller@debian.org>  Sat, 28 Jul 2018 18:00:52 +0200
+
 alfred (2016.1-1) unstable; urgency=low
 
   * New upstream version.

@@ -1,3 +1,2 @@
-version=3
-opts="uversionmangle=s/-(alpha|beta|rc)/~$1/,pgpsigurlmangle=s/$/.asc/" \
- https://downloads.open-mesh.org/batman/stable/sources/alfred/alfred-(.*).tar.gz
+version=4
+opts="pgpmode=auto" https://downloads.open-mesh.org/batman/releases/batman-adv-(.*)/alfred-(.*)\.tar\.gz

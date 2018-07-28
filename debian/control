@@ -2,8 +2,14 @@ Source: alfred
 Section: net
 Priority: optional
 Maintainer: Steffen Moeller <moeller@debian.org>
-Build-Depends: debhelper (>= 8.0.0), libgps-dev, libcap-dev [linux-any], pkg-config
-Standards-Version: 3.9.8
+Build-Depends: debhelper (>= 9.0.0),
+ libgps-dev,
+ libcap-dev [linux-any],
+ libnl-3-dev, libnl-genl-3-dev,
+ pkg-config
+Standards-Version: 4.1.5
+Vcs-Browser: https://github.com/ffoh/debian-alfred
+Vcs-Git: https://github.com/ffoh/debian-alfred.git
 Homepage: https://www.open-mesh.org/projects/alfred/wiki
 
 Package: alfred
