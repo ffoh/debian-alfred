@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 1991-2013 linux kernel contributors
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 1991-2013 linux kernel contributors
  *
  * Linus Torvalds, ...
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #ifndef _LINUX_LIST_H

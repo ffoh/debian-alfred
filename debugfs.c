@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2009 Clark Williams <williams@redhat.com>
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2009 Clark Williams <williams@redhat.com>
  * Copyright (C) 2009 Xiao Guangrong <xiaoguangrong@cn.fujitsu.com>
  *
  * This program is free software; you can redistribute it and/or
@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include "debugfs.h"

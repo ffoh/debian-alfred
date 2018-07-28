@@ -1,7 +1,8 @@
 #!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-2.0
 # -*- makefile -*-
 #
-# Copyright (C) 2013-2016  B.A.T.M.A.N. contributors
+# Copyright (C) 2013-2018  B.A.T.M.A.N. contributors
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of version 2 of the GNU General Public
@@ -17,14 +18,16 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301, USA
 #
+# License-Filename: LICENSES/preferred/GPL-2.0
 
 # alfred-gpsd build
 BINARY_NAME = alfred-gpsd
-OBJ = alfred-gpsd.o
+OBJ += alfred-gpsd.o
 MANPAGE = man/alfred-gpsd.8
 
 # alfred flags and options
 CFLAGS += -pedantic -Wall -W -std=gnu99 -fno-strict-aliasing -MD -MP
+CPPFLAGS += -D_GNU_SOURCE
 
 # disable verbose output
 ifneq ($(findstring $(MAKEFLAGS),s),s)

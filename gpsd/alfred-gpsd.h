@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2013-2016  B.A.T.M.A.N. contributors:
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2013-2018  B.A.T.M.A.N. contributors:
  *
  * Andrew Lunn, Simon Wunderlich
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include <stdio.h>
@@ -38,7 +39,7 @@
 #include "../list.h"
 
 #ifndef SOURCE_VERSION
-#define SOURCE_VERSION				"2016.1"
+#define SOURCE_VERSION				"2018.2"
 #endif
 
 #define ALFRED_SOCK_PATH_DEFAULT		"/var/run/alfred.sock"

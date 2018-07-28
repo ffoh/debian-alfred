@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include <errno.h>
@@ -37,6 +38,7 @@
 #include <unistd.h>
 #include <time.h>
 #include "alfred.h"
+#include "bitops.h"
 #include "batadv_query.h"
 #include "hash.h"
 #include "list.h"
@@ -113,7 +115,7 @@ static int create_hashes(struct globals *globals)
 	return 0;
 }
 
-int set_best_server(struct globals *globals)
+static int set_best_server(struct globals *globals)
 {
 	struct hash_it_t *hashit = NULL;
 	struct server *best_server = NULL;
@@ -139,23 +141,10 @@ int set_best_server(struct globals *globals)
 
 void changed_data_type(struct globals *globals, uint8_t arg)
 {
-	struct changed_data_type *data_type = NULL;
-
 	if (!globals->update_command)
 		return;
 
-	list_for_each_entry(data_type, &globals->changed_data_types, list) {
-		if (data_type->data_type == arg)
-			return;
-	}
-
-	data_type = malloc(sizeof(*data_type));
-	if (!data_type)
-		return;
-
-	data_type->data_type = arg;
-	list_add(&data_type->list, &globals->changed_data_types);
-	globals->changed_data_type_count++;
+	set_bit(arg, globals->changed_data_types);
 }
 
 static int purge_data(struct globals *globals)
@@ -218,7 +207,60 @@ static int purge_data(struct globals *globals)
 	return 0;
 }
 
-static void check_if_socket(struct interface *interface)
+static void update_server_info(struct globals *globals)
+{
+	struct hash_it_t *hashit = NULL;
+	struct interface *interface;
+	struct ether_addr *macaddr;
+	struct hashtable_t *tg_hash = NULL;
+	struct hashtable_t *orig_hash = NULL;
+
+	/* TQ is not used for master sync mode */
+	if (globals->opmode == OPMODE_MASTER)
+		return;
+
+	if (strcmp(globals->mesh_iface, "none") != 0) {
+		tg_hash = tg_hash_new(globals->mesh_iface);
+		if (!tg_hash) {
+			fprintf(stderr, "Failed to create translation hash\n");
+			return;
+		}
+
+		orig_hash = orig_hash_new(globals->mesh_iface);
+		if (!orig_hash) {
+			fprintf(stderr, "Failed to create originator hash\n");
+			goto free_tg_hash;
+		}
+	}
+
+	list_for_each_entry(interface, &globals->interfaces, list) {
+		while (NULL != (hashit = hash_iterate(interface->server_hash,
+						      hashit))) {
+			struct server *server = hashit->bucket->data;
+
+			if (!orig_hash) {
+				server->tq = 255;
+				continue;
+			}
+
+			macaddr = translate_mac(tg_hash, &server->hwaddr);
+			if (macaddr)
+				server->tq = get_tq(orig_hash, macaddr);
+			else
+				server->tq = 0;
+		}
+	}
+
+	set_best_server(globals);
+
+	if (orig_hash)
+		orig_hash_free(orig_hash);
+free_tg_hash:
+	if (tg_hash)
+		tg_hash_free(tg_hash);
+}
+
+static void check_if_socket(struct interface *interface, struct globals *globals)
 {
 	int sock;
 	struct ifreq ifr;
@@ -226,7 +268,7 @@ static void check_if_socket(struct interface *interface)
 	if (interface->netsock < 0)
 		return;
 
-	sock = socket(PF_INET6, SOCK_DGRAM, 0);
+	sock = socket(PF_INET, SOCK_DGRAM, 0);
 	if (sock < 0) {
 		perror("can't open socket");
 		return;
@@ -240,7 +282,7 @@ static void check_if_socket(struct interface *interface)
 		goto close;
 	}
 
-	if (interface->scope_id != (uint32_t)ifr.ifr_ifindex) {
+	if (!globals->ipv4mode && (interface->scope_id != (uint32_t)ifr.ifr_ifindex)) {
 		fprintf(stderr,
 			"iface index changed from %"PRIu32" to %d, closing netsock\n",
 			interface->scope_id, ifr.ifr_ifindex);
@@ -282,7 +324,7 @@ static void check_if_sockets(struct globals *globals)
 	globals->if_check = now;
 
 	list_for_each_entry(interface, &globals->interfaces, list)
-		check_if_socket(interface);
+		check_if_socket(interface, globals);
 }
 
 static void execute_update_command(struct globals *globals)
@@ -290,20 +332,27 @@ static void execute_update_command(struct globals *globals)
 	pid_t script_pid;
 	size_t command_len;
 	char *command;
-	struct changed_data_type *data_type, *is;
-	/* data type is uint8_t, so 255 is maximum (3 chars)
-	 * space for appending + terminating null byte
+	size_t data_type;
+	size_t changed_data_type_count;
+	/* data type is limited by ALFRED_NUM_TYPES to 255 (3 chars), plus
+	 * 1x space for appending + terminating null byte
 	 */
 	char buf[5];
 
-	if (!globals->update_command || !globals->changed_data_type_count)
+	if (!globals->update_command)
 		return;
+
+	if (bitmap_empty(globals->changed_data_types, ALFRED_NUM_TYPES))
+		return;
+
+	changed_data_type_count = bitmap_weight(globals->changed_data_types,
+						ALFRED_NUM_TYPES);
 
 	/* length of script + 4 bytes per data type (space +3 chars)
 	 * + 1 for terminating null byte
 	 */
 	command_len = strlen(globals->update_command);
-	command_len += 4 * globals->changed_data_type_count + 1;
+	command_len += 4 * changed_data_type_count + 1;
 	command = malloc(command_len);
 	if (!command)
 		return;
@@ -311,17 +360,14 @@ static void execute_update_command(struct globals *globals)
 	strncpy(command, globals->update_command, command_len - 1);
 	command[command_len - 1] = '\0';
 
-	list_for_each_entry_safe(data_type, is, &globals->changed_data_types,
-				 list) {
+	for_each_set_bit (data_type, globals->changed_data_types,
+			  ALFRED_NUM_TYPES) {
 		/* append the datatype to command line */
-		snprintf(buf, sizeof(buf), " %d", data_type->data_type);
+		snprintf(buf, sizeof(buf), " %zu", data_type);
 		strncat(command, buf, command_len - strlen(command) - 1);
-
-		/* clean the list */
-		list_del(&data_type->list);
-		free(data_type);
 	}
-	globals->changed_data_type_count = 0;
+
+	bitmap_zero(globals->changed_data_types, ALFRED_NUM_TYPES);
 
 	printf("executing: %s\n", command);
 
@@ -372,7 +418,15 @@ int alfred_server(struct globals *globals)
 
 	while (1) {
 		clock_gettime(CLOCK_MONOTONIC, &now);
-		now.tv_sec -= ALFRED_INTERVAL;
+
+		/* subtract the synchronization period from the current time
+		 * NOTE: this is an atypical usage of time_diff as it ignores the return
+		 * value and store the result back into now, essentially performing the
+		 * operation:
+		 * now -= globals->sync_period;
+		 */
+		time_diff(&now, &globals->sync_period, &now);
+
 		if (!time_diff(&last_check, &now, &tv)) {
 			tv.tv_sec = 0;
 			tv.tv_nsec = 0;
@@ -409,11 +463,12 @@ int alfred_server(struct globals *globals)
 
 		if (globals->opmode == OPMODE_MASTER) {
 			/* we are a master */
-			printf("announce master ...\n");
+			printf("[%ld.%09ld] announce master ...\n", last_check.tv_sec, last_check.tv_nsec);
 			announce_master(globals);
 			sync_data(globals);
 		} else {
 			/* send local data to server */
+			update_server_info(globals);
 			push_local_data(globals);
 		}
 		purge_data(globals);

@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #include <errno.h>
@@ -41,22 +42,26 @@ static int finish_alfred_push_data(struct globals *globals,
 				   struct ether_addr mac,
 				   struct alfred_push_data_v0 *push)
 {
-	int len, data_len;
+	unsigned int len, data_len;
 	bool new_entry_created;
 	struct alfred_data *data;
 	struct dataset *dataset;
 	uint8_t *pos;
 
+	/* test already done in process_alfred_push_data */
 	len = ntohs(push->header.length);
+	if (len < sizeof(*push) - sizeof(push->header))
+		return -1;
+
 	len -= sizeof(*push) - sizeof(push->header);
 	pos = (uint8_t *)push->data;
 
-	while (len >= (int)sizeof(*data)) {
+	while (len >= sizeof(*data)) {
 		data = (struct alfred_data *)pos;
 		data_len = ntohs(data->header.length);
 
 		/* check if enough data is available */
-		if ((int)(data_len + sizeof(*data)) > len)
+		if (data_len + sizeof(*data) > len)
 			break;
 
 		new_entry_created = false;
@@ -131,7 +136,7 @@ transaction_add(struct globals *globals, struct ether_addr mac, uint16_t id)
 	head->server_addr = mac;
 	head->id = id;
 	head->requested_type = 0;
-	head->finished = 0;
+	head->txend_packets = 0;
 	head->num_packet = 0;
 	head->client_socket = -1;
 	clock_gettime(CLOCK_MONOTONIC, &head->last_rx_time);
@@ -160,35 +165,56 @@ struct transaction_head *transaction_clean(struct globals *globals,
 	return head;
 }
 
-struct transaction_head *
-transaction_clean_hash(struct globals *globals, struct transaction_head *search)
+static int finish_alfred_transaction(struct globals *globals,
+				     struct transaction_head *head,
+				     struct ether_addr mac)
 {
-	struct transaction_head *head;
+	struct transaction_packet *transaction_packet, *safe;
 
-	head = hash_find(globals->transaction_hash, search);
-	if (!head)
-		return head;
+	/* finish when all packets received */
+	if (!transaction_finished(head))
+		return 0;
 
-	return transaction_clean(globals, head);
+	list_for_each_entry_safe(transaction_packet, safe, &head->packet_list,
+				 list) {
+		finish_alfred_push_data(globals, mac, transaction_packet->push);
+
+		list_del(&transaction_packet->list);
+		free(transaction_packet->push);
+		free(transaction_packet);
+	}
+
+	transaction_clean(globals, head);
+
+	if (head->client_socket < 0)
+		free(head);
+	else
+		unix_sock_req_data_finish(globals, head);
+
+	return 1;
 }
 
 static int process_alfred_push_data(struct globals *globals,
-				    struct in6_addr *source,
+				    struct interface *interface,
+				    alfred_addr *source,
 				    struct alfred_push_data_v0 *push)
 {
-	int len;
+	unsigned int len;
 	struct ether_addr mac;
 	int ret;
 	struct transaction_head search, *head;
 	struct transaction_packet *transaction_packet;
 	int found;
 
-	ret = ipv6_to_mac(source, &mac);
+	if (globals->ipv4mode)
+		ret = ipv4_to_mac(interface, source, &mac);
+	else
+		ret = ipv6_to_mac(source, &mac);
 	if (ret < 0)
 		goto err;
 
 	len = ntohs(push->header.length);
-	if (len < (int)(sizeof(*push) - sizeof(push->header)))
+	if (len < sizeof(*push) - sizeof(push->header))
 		goto err;
 
 	search.server_addr = mac;
@@ -206,10 +232,6 @@ static int process_alfred_push_data(struct globals *globals,
 			goto err;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &head->last_rx_time);
-
-	/* this transaction was already finished/dropped */
-	if (head->finished != 0)
-		return -1;
 
 	found = 0;
 	list_for_each_entry(transaction_packet, &head->packet_list, list) {
@@ -237,6 +259,8 @@ static int process_alfred_push_data(struct globals *globals,
 	list_add_tail(&transaction_packet->list, &head->packet_list);
 	head->num_packet++;
 
+	finish_alfred_transaction(globals, head, mac);
+
 	return 0;
 err:
 	return -1;
@@ -245,26 +269,25 @@ err:
 static int
 process_alfred_announce_master(struct globals *globals,
 			       struct interface *interface,
-			       struct in6_addr *source,
+			       alfred_addr *source,
 			       struct alfred_announce_master_v0 *announce)
 {
 	struct server *server;
-	struct ether_addr *macaddr;
 	struct ether_addr mac;
 	int ret;
-	int len;
 
-	len = ntohs(announce->header.length);
-
-	ret = ipv6_to_mac(source, &mac);
+	if (globals->ipv4mode)
+		ret = ipv4_to_mac(interface, source, &mac);
+	else
+		ret = ipv6_to_mac(source, &mac);
 	if (ret < 0)
 		return -1;
 
 	if (announce->header.version != ALFRED_VERSION)
 		return -1;
 
-	if (len != (sizeof(*announce) - sizeof(announce->header)))
-		return -1;
+	/* skip header.length check because "announce" has no extra fields */
+	BUILD_BUG_ON(sizeof(*announce) - sizeof(announce->header) != 0);
 
 	server = hash_find(interface->server_hash, &mac);
 	if (!server) {
@@ -274,6 +297,7 @@ process_alfred_announce_master(struct globals *globals,
 
 		memcpy(&server->hwaddr, &mac, ETH_ALEN);
 		memcpy(&server->address, source, sizeof(*source));
+		server->tq = 0;
 
 		if (hash_add(interface->server_hash, server)) {
 			free(server);
@@ -282,36 +306,23 @@ process_alfred_announce_master(struct globals *globals,
 	}
 
 	clock_gettime(CLOCK_MONOTONIC, &server->last_seen);
-	if (strcmp(globals->mesh_iface, "none") != 0) {
-		macaddr = translate_mac(globals->mesh_iface,
-					(struct ether_addr *)&server->hwaddr);
-		if (macaddr)
-			server->tq = get_tq(globals->mesh_iface, macaddr);
-		else
-			server->tq = 0;
-	} else {
-		server->tq = 255;
-	}
-
-	if (globals->opmode == OPMODE_SLAVE)
-		set_best_server(globals);
 
 	return 0;
 }
 
 static int process_alfred_request(struct globals *globals,
 				  struct interface *interface,
-				  struct in6_addr *source,
+				  alfred_addr *source,
 				  struct alfred_request_v0 *request)
 {
-	int len;
+	unsigned int len;
 
 	len = ntohs(request->header.length);
 
 	if (request->header.version != ALFRED_VERSION)
 		return -1;
 
-	if (len != (sizeof(*request) - sizeof(request->header)))
+	if (len < (sizeof(*request) - sizeof(request->header)))
 		return -1;
 
 	push_data(globals, interface, source, SOURCE_SYNCED,
@@ -321,23 +332,27 @@ static int process_alfred_request(struct globals *globals,
 }
 
 static int process_alfred_status_txend(struct globals *globals,
-				       struct in6_addr *source,
+				       struct interface *interface,
+				       alfred_addr *source,
 				       struct alfred_status_v0 *request)
 {
 	struct transaction_head search, *head;
-	struct transaction_packet *transaction_packet, *safe;
 	struct ether_addr mac;
-	int len, ret;
+	unsigned int len;
+	int ret;
 
 	len = ntohs(request->header.length);
 
 	if (request->header.version != ALFRED_VERSION)
 		return -1;
 
-	if (len != (sizeof(*request) - sizeof(request->header)))
+	if (len < (sizeof(*request) - sizeof(request->header)))
 		return -1;
 
-	ret = ipv6_to_mac(source, &mac);
+	if (globals->ipv4mode)
+		ret = ipv4_to_mac(interface, source, &mac);
+	else
+		ret = ipv6_to_mac(source, &mac);
 	if (ret < 0)
 		return -1;
 
@@ -345,40 +360,28 @@ static int process_alfred_status_txend(struct globals *globals,
 	search.id = ntohs(request->tx.id);
 
 	head = hash_find(globals->transaction_hash, &search);
-	if (!head)
-		return -1;
+	if (!head) {
+		/* slave must create the transactions to be able to correctly
+		 *  wait for it */
+		if (globals->opmode != OPMODE_MASTER)
+			goto err;
 
-	/* this transaction was already finished/dropped */
-	if (head->finished != 0)
-		return -1;
+		/* 0-packet txend for unknown transaction */
+		if (ntohs(request->tx.seqno) == 0)
+			goto err;
 
-	/* missing packets -> cleanup everything */
-	if (head->num_packet != ntohs(request->tx.seqno))
-		head->finished = -1;
-	else
-		head->finished = 1;
-
-	list_for_each_entry_safe(transaction_packet, safe, &head->packet_list,
-				 list) {
-		if (head->finished == 1)
-			finish_alfred_push_data(globals, mac,
-						transaction_packet->push);
-
-		list_del(&transaction_packet->list);
-		free(transaction_packet->push);
-		free(transaction_packet);
+		head = transaction_add(globals, mac, ntohs(request->tx.id));
+		if (!head)
+			goto err;
 	}
+	clock_gettime(CLOCK_MONOTONIC, &head->last_rx_time);
 
-	head = transaction_clean_hash(globals, &search);
-	if (!head)
-		return -1;
-
-	if (head->client_socket < 0)
-		free(head);
-	else
-		unix_sock_req_data_finish(globals, head);
+	head->txend_packets = ntohs(request->tx.seqno);
+	finish_alfred_transaction(globals, head, mac);
 
 	return 0;
+err:
+	return -1;
 }
 
 int recv_alfred_packet(struct globals *globals, struct interface *interface,
@@ -387,15 +390,25 @@ int recv_alfred_packet(struct globals *globals, struct interface *interface,
 	uint8_t buf[MAX_PAYLOAD];
 	ssize_t length;
 	struct alfred_tlv *packet;
-	struct sockaddr_in6 source;
+	struct sockaddr_in *source;
+	struct sockaddr_in source4;
+	struct sockaddr_in6 source6;
 	socklen_t sourcelen;
+	alfred_addr alfred_source;
 
 	if (interface->netsock < 0)
 		return -1;
 
-	sourcelen = sizeof(source);
+	if (globals->ipv4mode) {
+		source = (struct sockaddr_in *)&source4;
+		sourcelen = sizeof(source4);
+	} else {
+		source = (struct sockaddr_in *)&source6;
+		sourcelen = sizeof(source6);
+	}
+
 	length = recvfrom(recv_sock, buf, sizeof(buf), 0,
-			  (struct sockaddr *)&source, &sourcelen);
+			  (struct sockaddr *)source, &sourcelen);
 	if (length <= 0) {
 		perror("read from network socket failed");
 		return -1;
@@ -403,12 +416,18 @@ int recv_alfred_packet(struct globals *globals, struct interface *interface,
 
 	packet = (struct alfred_tlv *)buf;
 
-	/* drop packets not sent over link-local ipv6 */
-	if (!is_ipv6_eui64(&source.sin6_addr))
-		return -1;
+	if (globals->ipv4mode) {
+		memcpy(&alfred_source, &source4.sin_addr, sizeof(source4.sin_addr));
+	} else {
+		memcpy(&alfred_source, &source6.sin6_addr, sizeof(source6.sin6_addr));
+
+		/* drop packets not sent over link-local ipv6 */
+		if (!is_ipv6_eui64(&alfred_source.ipv6))
+			return -1;
+	}
 
 	/* drop packets from ourselves */
-	if (netsock_own_address(globals, &source.sin6_addr))
+	if (netsock_own_address(globals, &alfred_source))
 		return -1;
 
 	/* drop truncated packets */
@@ -422,20 +441,20 @@ int recv_alfred_packet(struct globals *globals, struct interface *interface,
 
 	switch (packet->type) {
 	case ALFRED_PUSH_DATA:
-		process_alfred_push_data(globals, &source.sin6_addr,
+		process_alfred_push_data(globals, interface, &alfred_source,
 					 (struct alfred_push_data_v0 *)packet);
 		break;
 	case ALFRED_ANNOUNCE_MASTER:
 		process_alfred_announce_master(globals, interface,
-					       &source.sin6_addr,
+					       &alfred_source,
 					       (struct alfred_announce_master_v0 *)packet);
 		break;
 	case ALFRED_REQUEST:
-		process_alfred_request(globals, interface, &source.sin6_addr,
+		process_alfred_request(globals, interface, &alfred_source,
 				       (struct alfred_request_v0 *)packet);
 		break;
 	case ALFRED_STATUS_TXEND:
-		process_alfred_status_txend(globals, &source.sin6_addr,
+		process_alfred_status_txend(globals, interface, &alfred_source,
 					    (struct alfred_status_v0 *)packet);
 		break;
 	default:

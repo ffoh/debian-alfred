@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich
  *
@@ -17,8 +17,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
  * 02110-1301, USA
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
+#include <arpa/inet.h>
 #include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
@@ -30,6 +32,7 @@
 #include <unistd.h>
 #endif
 #include "alfred.h"
+#include "debugfs.h"
 #include "packet.h"
 #include "list.h"
 
@@ -58,6 +61,9 @@ static void alfred_usage(void)
 	printf("  -m, --master                        start up the daemon in master mode, which\n");
 	printf("                                      accepts data from slaves and syncs it with\n");
 	printf("                                      other masters\n");
+	printf("  -p, --sync-period [period]          set synchronization period, in seconds\n");
+	printf("                                      fractional seconds are supported (i.e. 0.2 = 5 Hz)\n");
+	printf("  -4 [group-address]                  specify IPv4 multicast address and operate in IPv4 mode");
 	printf("\n");
 	printf("  -u, --unix-path [path]              path to unix socket used for client-server\n");
 	printf("                                      communication (default: \""ALFRED_SOCK_PATH_DEFAULT"\")\n");
@@ -76,6 +82,7 @@ static int reduce_capabilities(void)
 	cap_t cap_new;
 	cap_flag_value_t cap_flag;
 	cap_value_t cap_net_raw = CAP_NET_RAW;
+	cap_value_t cap_net_admin = CAP_NET_ADMIN;
 
 	/* get current process capabilities */
 	cap_cur = cap_get_proc();
@@ -97,6 +104,17 @@ static int reduce_capabilities(void)
 	cap_get_flag(cap_cur, CAP_NET_RAW, CAP_PERMITTED, &cap_flag);
 	if (cap_flag != CAP_CLEAR) {
 		ret = cap_set_flag(cap_new, CAP_PERMITTED, 1, &cap_net_raw,
+				   CAP_SET);
+		if (ret < 0) {
+			perror("cap_set_flag");
+			goto out;
+		}
+	}
+
+	cap_flag = CAP_CLEAR;
+	cap_get_flag(cap_cur, CAP_NET_ADMIN, CAP_PERMITTED, &cap_flag);
+	if (cap_flag != CAP_CLEAR) {
+		ret = cap_set_flag(cap_new, CAP_PERMITTED, 1, &cap_net_admin,
 				   CAP_SET);
 		if (ret < 0) {
 			perror("cap_set_flag");
@@ -143,6 +161,7 @@ out:
 static struct globals *alfred_init(int argc, char *argv[])
 {
 	int opt, opt_ind, i, ret;
+	double sync_period = 0.0;
 	struct globals *globals;
 	struct option long_options[] = {
 		{"set-data",		required_argument,	NULL,	's'},
@@ -157,8 +176,12 @@ static struct globals *alfred_init(int argc, char *argv[])
 		{"update-command",	required_argument,	NULL,	'c'},
 		{"version",		no_argument,		NULL,	'v'},
 		{"verbose",		no_argument,		NULL,	'd'},
+		{"sync-period",		required_argument,	NULL,	'p'},
 		{NULL,			0,			NULL,	0},
 	};
+
+	/* We need full capabilities to mount debugfs, so do that now */
+	debugfs_mount(NULL);
 
 	ret = reduce_capabilities();
 	if (ret < 0)
@@ -176,19 +199,22 @@ static struct globals *alfred_init(int argc, char *argv[])
 	globals->mesh_iface = "bat0";
 	globals->unix_path = ALFRED_SOCK_PATH_DEFAULT;
 	globals->verbose = 0;
+	globals->ipv4mode = 0;
 	globals->update_command = NULL;
-	INIT_LIST_HEAD(&globals->changed_data_types);
-	globals->changed_data_type_count = 0;
+	globals->sync_period.tv_sec = ALFRED_INTERVAL;
+	globals->sync_period.tv_nsec = 0;
+	bitmap_zero(globals->changed_data_types, ALFRED_NUM_TYPES);
 
 	time_random_seed();
 
-	while ((opt = getopt_long(argc, argv, "ms:r:hi:b:vV:M:I:u:dc:", long_options,
+	while ((opt = getopt_long(argc, argv, "ms:r:hi:b:vV:M:I:u:dc:p:4:", long_options,
 				  &opt_ind)) != -1) {
 		switch (opt) {
 		case 'r':
 			globals->clientmode = CLIENT_REQUEST_DATA;
 			i = atoi(optarg);
-			if (i < ALFRED_MAX_RESERVED_TYPE || i > 255) {
+			if (i < ALFRED_MAX_RESERVED_TYPE ||
+			    i >= ALFRED_NUM_TYPES) {
 				fprintf(stderr, "bad data type argument\n");
 				return NULL;
 			}
@@ -198,7 +224,8 @@ static struct globals *alfred_init(int argc, char *argv[])
 		case 's':
 			globals->clientmode = CLIENT_SET_DATA;
 			i = atoi(optarg);
-			if (i < ALFRED_MAX_RESERVED_TYPE || i > 255) {
+			if (i < ALFRED_MAX_RESERVED_TYPE ||
+			    i >= ALFRED_NUM_TYPES) {
 				fprintf(stderr, "bad data type argument\n");
 				return NULL;
 			}
@@ -249,6 +276,17 @@ static struct globals *alfred_init(int argc, char *argv[])
 			printf("%s %s\n", argv[0], SOURCE_VERSION);
 			printf("A.L.F.R.E.D. - Almighty Lightweight Remote Fact Exchange Daemon\n");
 			return NULL;
+		case 'p':
+			sync_period = strtod(optarg, NULL);
+			globals->sync_period.tv_sec = (int)sync_period;
+			globals->sync_period.tv_nsec = (double)(sync_period - (int)sync_period) * 1e9;
+			printf(" ** Setting sync interval to: %.9f seconds (%ld.%09ld)\n", sync_period, globals->sync_period.tv_sec, globals->sync_period.tv_nsec);
+			break;
+		case '4':
+			globals->ipv4mode = 1;
+			inet_pton(AF_INET, optarg, &alfred_mcast.ipv4);
+			printf(" ** IPv4 Multicast Mode: %x\n", alfred_mcast.ipv4.s_addr);
+			break;
 		case 'h':
 		default:
 			alfred_usage();

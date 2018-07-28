@@ -1,5 +1,5 @@
-/*
- * Copyright (C) 2012-2016  B.A.T.M.A.N. contributors:
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2012-2018  B.A.T.M.A.N. contributors:
  *
  * Simon Wunderlich, Sven Eckelmann
  *
@@ -15,6 +15,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
+ * License-Filename: LICENSES/preferred/GPL-2.0
  */
 
 #ifndef _ALFRED_PACKET_H
@@ -177,5 +178,6 @@ struct alfred_status_v0 {
 #define ALFRED_VERSION			0
 #define ALFRED_PORT			0x4242
 #define ALFRED_MAX_RESERVED_TYPE	64
+#define ALFRED_NUM_TYPES		256
 
 #endif
